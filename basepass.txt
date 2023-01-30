@@ -1,0 +1,2 @@
+password_to_database
+name_of_database
