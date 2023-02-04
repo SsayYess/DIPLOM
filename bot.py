@@ -6,12 +6,15 @@ import requests
 import datetime
 import psycopg2
 from database import create_db, clean_tbs, add_data, show_data, name_db, password_db
+import vk_api
+from vk_api.longpoll import VkLongPoll, VkEventType
 
 with open('bot_token.txt', 'r') as file:
     bot_token = file.readline().strip()
 with open('user_token.txt', 'r') as file:
     user_token = file.readline().strip()
     main_user_id = file.readline().strip()
+
 
 class UsersVK:
 
@@ -28,7 +31,8 @@ class UsersVK:
         url = 'https://api.vk.com/method/users.get'
         params = {'user_ids': user_id, 'fields': 'sex, city, bdate, screen_name, counters, relation'}
         response = requests.get(url, params={**self.params, **params}).json()
-        return response['response']
+        if len(response) > 0:
+            return response['response']
 
     def get_photo(self, user_id: str, count):
         url = 'https://api.vk.com/method/photos.get'
@@ -40,7 +44,8 @@ class UsersVK:
             'count': count
         }
         response = requests.get(url, params={**self.params, **params}).json()
-        return response['response']['items']
+        if len(response) > 0:
+            return response['response']['items']
 
 
 class Candidate():
@@ -110,14 +115,18 @@ class Candidate():
         photo_user = vk.get_photo(self.id, 100)
         photo_grade = []
         for i in photo_user:
-            photo_grade.append((i['sizes'][-1]['url'], i['likes']['count'] + i['comments']['count']))
+            photo_grade.append((i['owner_id'], i['id'], i['likes']['count'] + i['comments']['count']))
         photo_grade = sorted(photo_grade, key=lambda likes: likes[-1], reverse=True)
+        photos = ''
         for i in range(3):
             try:
-                print(photo_grade[i][0])
+                if i == 0:
+                    photos += f'photo{photo_grade[i][0]}_{photo_grade[i][1]}'
+                else:
+                    photos += f',photo{photo_grade[i][0]}_{photo_grade[i][1]}'
             except IndexError:
                 pass
-        print('https://vk.com/'+self.screen_name)
+        send_photo(user_id, f'https://vk.com/{self.screen_name}', photos)
 
 
 def create_users_list(count):
@@ -150,7 +159,7 @@ def ini_lop():
                        'помолвлен / помолвлена',
                        'женат / замужем', 'всё сложно', 'в активном поиске', 'влюблён / влюблена',
                        'в гражданском браке']
-    return {'min_age': 18, 'max_age': 40, 'sex': 0, 'city': 'Любой', 'relation': 0}
+    return {'min_age': 20, 'max_age': 30, 'sex': 0, 'city': 'Москва', 'relation': 0}
 
 
 def check_lop(list_of_param, main_user):
@@ -163,48 +172,15 @@ def check_lop(list_of_param, main_user):
         list_of_param['sex'] = 2
     elif main_user.sex == 2:
         list_of_param['sex'] = 1
-    print(
-        f'Похоже вы ищете: незамужнего(-юю) {sex_list[list_of_param["sex"]]} от {list_of_param["min_age"]} до {list_of_param["max_age"]} {age_list[list_of_param["max_age"] % 10]} из города {list_of_param["city"]}')
     return list_of_param
-
-def change_lop(list_of_param):
-    while True:
-        user_input = input('Хотите изменить критерии поиска? ').strip()
-        if user_input.lower() in ['y', 'yes', 'да', 'д', 'хочу']:
-            while True:
-                user_input_2 = input('Что хотите изменить? пол, возраст, город, семейное положение? ').strip()
-                if user_input_2.lower() == 'пол':
-                    list_of_param['sex'] = int(input(
-                        'Введите 1 для поиска женщины, 2 для поиска мужчины, 3 для поиска без учета пола ').strip())
-                elif user_input_2.lower() == 'возраст':
-                    user_input_list = input('Введите возраст через дефиз ').split('-')
-                    list_of_param['min_age'] = int(user_input_list[0])
-                    list_of_param['max_age'] = int(user_input_list[1])
-                    if list_of_param['min_age'] < 18:
-                        list_of_param['min_age'] = 18
-                    if list_of_param['max_age'] < 18:
-                        list_of_param['max_age'] = 18
-                elif user_input_2.lower() == 'город':
-                    list_of_param['city'] = input('Введите город (любой - для поиска без учета города) ').strip().capitalize()
-                elif user_input_2.lower() == 'семейное положение':
-                    list_of_param['relation'] = int(
-                        input(
-                            'Введите 1 - не женат / не замужем, 2 - есть друг / есть подруга, 3 - помолвлен / помолвлена,'
-                            '4 - женат / замужем, 5 - всё сложно, 6 - в активном поиске, 7 - влюблён / влюблена, '
-                            '8 - в гражданском браке, 0 - интеллектуальный поиск ').strip())
-                elif user_input_2.lower() in ['q', 'ничего']:
-                    return list_of_param
-        elif user_input.lower() in ['n', 'no', 'нет', 'н']:
-            print(f'Ищем {sex_list[list_of_param["sex"]]} от {list_of_param["min_age"]} до {list_of_param["max_age"]} {age_list[list_of_param["max_age"] % 10]} из города {list_of_param["city"]} статус отношений - {relation_status[list_of_param["relation"]]}')
-            return list_of_param
-
 
 
 def add_and_show_candidats(user_list, base_list):
     tmp_list = []
     for men in user_list:
         if men.id not in base_list:
-            print(men)
+            print(user_id, men)
+            write_msg(user_id, f'{men}')
             Candidate.get_info(men)
             sleep(0.5)
             tmp_list.append(men.id)
@@ -212,32 +188,101 @@ def add_and_show_candidats(user_list, base_list):
 
 
 vk = UsersVK(user_token, main_user_id)
+session = vk_api.VkApi(token=bot_token)
+
+
+def write_msg(user_id, message):
+    session.method('messages.send', {
+        'user_id': user_id,
+        'message': message,
+        'random_id': randrange(10 ** 7)
+    })
+
+
+def send_photo(user_id, message, photos):
+    session.method('messages.send', {
+        'user_id': user_id,
+        'message': message,
+        'random_id': randrange(10 ** 7),
+        'attachment': photos
+    })
+
 
 list_of_param = ini_lop()
-main_user = Candidate(vk.users_info(main_user_id)[0])
-print('Привет,', main_user.name)
+for event in VkLongPoll(session).listen():
+    if event.type == VkEventType.MESSAGE_NEW and event.to_me:
+        user_request = event.text.lower()
+        user_id = event.user_id
+        main_user = Candidate(vk.users_info(user_id)[0])
 
-list_of_param = check_lop(list_of_param, main_user)
-list_of_param = change_lop(list_of_param)
+        if user_request == 'привет':
+            list_of_param = check_lop(list_of_param, main_user)
+            with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
+                create_db(conn)
+            conn.close()
+            write_msg(user_id, f'Привет, {main_user.name} \n '
+                               f'Список команд по запросу help')
 
-with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
-    create_db(conn)
-    a = True
-    while a == True:
-        users = create_users_list(300)
-        man_list = check_users(users)
-        id_from_base = show_data(conn)
-        new_ids = add_and_show_candidats(man_list, id_from_base)
-        if len(new_ids) != 0:
-            for id_count in new_ids:
-                add_data(conn, id_count)
-            user_input = input('Новый поиск? ')
-            if user_input.lower() in ['y', 'yes', 'да', 'д', 'хочу']:
-                list_of_param = change_lop(list_of_param)
+        if user_request == 'параметры':
+            write_msg(user_id, f'Похоже вы ищете: {sex_list[list_of_param["sex"]]} от {list_of_param["min_age"]} до {list_of_param["max_age"]}'
+                               f' {age_list[list_of_param["max_age"] % 10]} из города {list_of_param["city"]}'
+                               f' статус отношений - {relation_status[list_of_param["relation"]]}\n'
+                               f'для изменения параметров введи: ИЗМЕНИТЬ и параметры через запятую: \n'
+                               f'ВОЗРАСТ от, до, ПОЛ (1 для поиска женщины, 2 для поиска мужчины, 3 для поиска без учета пола), ГОРОД, '
+                               f'СТАТУС ОТНОШЕНИЙ (1 - не женат / не замужем, 2 - есть друг / есть подруга, 3 - помолвлен / помолвлена, '
+                               f'4 - женат / замужем, 5 - всё сложно, 6 - в активном поиске, 7 - влюблён / влюблена, 8 - в гражданском браке, '
+                               f'0 - интеллектуальный поиск)\n'
+                               f'пример запроса\nИЗМЕНИТЬ 20,35,2,Москва,0')
+
+        if user_request.split(' ')[0] == 'изменить':
+            params = user_request.split(" ")[1].strip().split(',')
+            if len(params) != 5:
+                write_msg(user_id, 'введены неверные данные')
             else:
-                print('До скорых встреч!')
-                a = False
+                list_of_param['min_age'] = int(params[0])
+                list_of_param['max_age'] = int(params[1])
+                if list_of_param['min_age'] < 18:
+                    list_of_param['min_age'] = 18
+                if list_of_param['max_age'] < 18:
+                    list_of_param['max_age'] = 25
+                list_of_param['sex'] = int(params[2])
+                if list_of_param['sex'] > 2 or list_of_param['sex'] < 0:
+                    list_of_param['sex'] = 0
+                list_of_param['city'] = params[3].capitalize()
+                if len(list_of_param['city']) < 2:
+                    list_of_param['city'] = 'Любой'
+                list_of_param['relation'] = int(params[4])
+                if list_of_param['relation'] > 8 or list_of_param['relation'] < 0:
+                    list_of_param['relation'] = 0
+                write_msg(user_id, f'Ищем {sex_list[list_of_param["sex"]]} от {list_of_param["min_age"]} до {list_of_param["max_age"]} '
+                                   f'{age_list[list_of_param["max_age"] % 10]} из города {list_of_param["city"]} статус отношений - {relation_status[list_of_param["relation"]]}')
 
-    # clean_tbs(conn)
-    # create_db(conn)
-conn.close()
+        if user_request in ['help', 'помощь', 'команды']:
+            write_msg(user_id, f'параметры - покажу заданные параметры поиска\n'
+                               f'изменить - изменим параметры поиска\n'
+                               f'поиск - найду для вас подходящих кандидатов\n')
+
+        if user_request == 'поиск':
+            with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
+                users = create_users_list(300)
+                man_list = check_users(users)
+                id_from_base = show_data(conn)
+                new_ids = add_and_show_candidats(man_list, id_from_base)
+                flag = True
+                count = 0
+                while flag:
+                    count += 1
+                    if len(new_ids) != 0:
+                        for id_count in new_ids:
+                            add_data(conn, id_count)
+                        flag = False
+                    if count > 10:
+                        write_msg(user_id, 'Поиск ничего не дал')
+                        flag = False
+            conn.close()
+
+        if user_request == 'стоп':
+            with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
+                clean_tbs(conn)
+            conn.close()
+            break
