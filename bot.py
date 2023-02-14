@@ -1,7 +1,4 @@
-import random
 from random import randrange
-import time
-from time import sleep
 import requests
 import datetime
 import psycopg2
@@ -30,9 +27,9 @@ class UsersVK:
     def users_info(self, user_id):
         url = 'https://api.vk.com/method/users.get'
         params = {'user_ids': user_id, 'fields': 'sex, city, bdate, screen_name, counters, relation'}
-        response = requests.get(url, params={**self.params, **params}).json()
-        if len(response) > 0:
-            return response['response']
+        response = requests.get(url, params={**self.params, **params})
+        if response.status_code == 200:
+            return response.json()['response']
 
     def get_photo(self, user_id: str, count):
         url = 'https://api.vk.com/method/photos.get'
@@ -43,9 +40,9 @@ class UsersVK:
             'photo_sizes': '1',
             'count': count
         }
-        response = requests.get(url, params={**self.params, **params}).json()
-        if len(response) > 0:
-            return response['response']['items']
+        response = requests.get(url, params={**self.params, **params})
+        if response.status_code == 200:
+            return response.json()['response']['items']
 
 
 class Candidate():
@@ -126,7 +123,7 @@ class Candidate():
                     photos += f',photo{photo_grade[i][0]}_{photo_grade[i][1]}'
             except IndexError:
                 pass
-        send_photo(user_id, f'https://vk.com/{self.screen_name}', photos)
+        write_msg(user_id, f'https://vk.com/{self.screen_name}', photos)
 
 
 def create_users_list(count):
@@ -136,13 +133,13 @@ def create_users_list(count):
     return vk.users_info(','.join(map(str, tmp_list)))
 
 
-def check_users(user_list):
+def check_users(user_list, id_stop_list):
     tmp_list = []
     for user in user_list:
         try:
             Any = user['deactivated']
         except KeyError:
-            if not (user['is_closed']) or (user['is_closed'] and user['can_access_closed']):
+            if not (user['is_closed']) or (user['is_closed'] and user['can_access_closed']) and (user not in id_stop_list):
                 man = Candidate(user)
                 if man.grade > 22:
                     tmp_list.append(man)
@@ -159,7 +156,7 @@ def ini_lop():
                        'помолвлен / помолвлена',
                        'женат / замужем', 'всё сложно', 'в активном поиске', 'влюблён / влюблена',
                        'в гражданском браке']
-    return {'min_age': 20, 'max_age': 30, 'sex': 0, 'city': 'Москва', 'relation': 0}
+    return {'min_age': 20, 'max_age': 40, 'sex': 0, 'city': 'Москва', 'relation': 0}
 
 
 def check_lop(list_of_param, main_user):
@@ -175,31 +172,58 @@ def check_lop(list_of_param, main_user):
     return list_of_param
 
 
-def add_and_show_candidats(user_list, base_list):
-    tmp_list = []
-    for men in user_list:
-        if men.id not in base_list:
-            print(user_id, men)
-            write_msg(user_id, f'{men}')
-            Candidate.get_info(men)
-            sleep(0.5)
-            tmp_list.append(men.id)
-    return tmp_list
+def change_params(list_of_param, params):
+    if len(params) != 5:
+        write_msg(user_id, 'введены неверные данные')
+    else:
+        list_of_param['min_age'] = int(params[0])
+        list_of_param['max_age'] = int(params[1])
+        if list_of_param['min_age'] < 18:
+            list_of_param['min_age'] = 18
+        if list_of_param['max_age'] < 18:
+            list_of_param['max_age'] = 25
+        list_of_param['sex'] = int(params[2])
+        if list_of_param['sex'] > 2 or list_of_param['sex'] < 0:
+            list_of_param['sex'] = 0
+        list_of_param['city'] = params[3].capitalize()
+        if len(list_of_param['city']) < 2:
+            list_of_param['city'] = 'Любой'
+        list_of_param['relation'] = int(params[4])
+        if list_of_param['relation'] > 8 or list_of_param['relation'] < 0:
+            list_of_param['relation'] = 0
+    return list_of_param
 
 
-vk = UsersVK(user_token, main_user_id)
-session = vk_api.VkApi(token=bot_token)
+def search(count):
+    with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
+        id_from_base = show_data(conn)
+        flag = True
+        while flag:
+            users = create_users_list(count)
+            tmp_ml = check_users(users, id_from_base)
+            print(len(tmp_ml))
+            if len(tmp_ml) > 0:
+                flag = False
+    return tmp_ml
 
 
-def write_msg(user_id, message):
-    session.method('messages.send', {
-        'user_id': user_id,
-        'message': message,
-        'random_id': randrange(10 ** 7)
-    })
+def show_result(tmp_ml):
+    if len(tmp_ml) > 0:
+        men = tmp_ml[0]
+        print(user_id, men)
+        write_msg(user_id, f'{men}')
+        Candidate.get_info(men)
+        with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
+            add_data(conn, men.id)
+        conn.close()
+        tmp_ml.remove(men)
+    else:
+        tmp_ml = search(900)
+        show_result(tmp_ml)
+    return tmp_ml
 
 
-def send_photo(user_id, message, photos):
+def write_msg(user_id, message, photos=None):
     session.method('messages.send', {
         'user_id': user_id,
         'message': message,
@@ -207,6 +231,15 @@ def send_photo(user_id, message, photos):
         'attachment': photos
     })
 
+
+vk = UsersVK(user_token, main_user_id)
+session = vk_api.VkApi(token=bot_token)
+
+with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
+    create_db(conn)
+    clean_tbs(conn)
+    create_db(conn)
+conn.close()
 
 list_of_param = ini_lop()
 for event in VkLongPoll(session).listen():
@@ -217,16 +250,11 @@ for event in VkLongPoll(session).listen():
 
         if user_request == 'привет':
             list_of_param = check_lop(list_of_param, main_user)
-            with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
-                create_db(conn)
-            conn.close()
             write_msg(user_id, f'Привет, {main_user.name} \n '
                                f'Список команд по запросу help')
 
         if user_request == 'параметры':
-            write_msg(user_id, f'Похоже вы ищете: {sex_list[list_of_param["sex"]]} от {list_of_param["min_age"]} до {list_of_param["max_age"]}'
-                               f' {age_list[list_of_param["max_age"] % 10]} из города {list_of_param["city"]}'
-                               f' статус отношений - {relation_status[list_of_param["relation"]]}\n'
+            write_msg(user_id, f'Похоже вы ищете: {sex_list[list_of_param["sex"]]} от {list_of_param["min_age"]} до {list_of_param["max_age"]} {age_list[list_of_param["max_age"] % 10]} из города {list_of_param["city"]} статус отношений - {relation_status[list_of_param["relation"]]}\n'
                                f'для изменения параметров введи: ИЗМЕНИТЬ и параметры через запятую: \n'
                                f'ВОЗРАСТ от, до, ПОЛ (1 для поиска женщины, 2 для поиска мужчины, 3 для поиска без учета пола), ГОРОД, '
                                f'СТАТУС ОТНОШЕНИЙ (1 - не женат / не замужем, 2 - есть друг / есть подруга, 3 - помолвлен / помолвлена, '
@@ -236,25 +264,8 @@ for event in VkLongPoll(session).listen():
 
         if user_request.split(' ')[0] == 'изменить':
             params = user_request.split(" ")[1].strip().split(',')
-            if len(params) != 5:
-                write_msg(user_id, 'введены неверные данные')
-            else:
-                list_of_param['min_age'] = int(params[0])
-                list_of_param['max_age'] = int(params[1])
-                if list_of_param['min_age'] < 18:
-                    list_of_param['min_age'] = 18
-                if list_of_param['max_age'] < 18:
-                    list_of_param['max_age'] = 25
-                list_of_param['sex'] = int(params[2])
-                if list_of_param['sex'] > 2 or list_of_param['sex'] < 0:
-                    list_of_param['sex'] = 0
-                list_of_param['city'] = params[3].capitalize()
-                if len(list_of_param['city']) < 2:
-                    list_of_param['city'] = 'Любой'
-                list_of_param['relation'] = int(params[4])
-                if list_of_param['relation'] > 8 or list_of_param['relation'] < 0:
-                    list_of_param['relation'] = 0
-                write_msg(user_id, f'Ищем {sex_list[list_of_param["sex"]]} от {list_of_param["min_age"]} до {list_of_param["max_age"]} '
+            list_of_param = change_params(list_of_param, params)
+            write_msg(user_id, f'Ищем {sex_list[list_of_param["sex"]]} от {list_of_param["min_age"]} до {list_of_param["max_age"]} '
                                    f'{age_list[list_of_param["max_age"] % 10]} из города {list_of_param["city"]} статус отношений - {relation_status[list_of_param["relation"]]}')
 
         if user_request in ['help', 'помощь', 'команды']:
@@ -263,26 +274,11 @@ for event in VkLongPoll(session).listen():
                                f'поиск - найду для вас подходящих кандидатов\n')
 
         if user_request == 'поиск':
-            with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
-                users = create_users_list(300)
-                man_list = check_users(users)
-                id_from_base = show_data(conn)
-                new_ids = add_and_show_candidats(man_list, id_from_base)
-                flag = True
-                count = 0
-                while flag:
-                    count += 1
-                    if len(new_ids) != 0:
-                        for id_count in new_ids:
-                            add_data(conn, id_count)
-                        flag = False
-                    if count > 10:
-                        write_msg(user_id, 'Поиск ничего не дал')
-                        flag = False
-            conn.close()
+            man_list = search(900)
+            man_list = show_result(man_list)
+
+        if user_request == 'далее':
+            man_list = show_result(man_list)
 
         if user_request == 'стоп':
-            with psycopg2.connect(database=name_db, user='postgres', password=password_db) as conn:
-                clean_tbs(conn)
-            conn.close()
             break
